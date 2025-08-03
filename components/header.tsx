@@ -80,12 +80,12 @@ const Header: React.FC<HeaderProps> = ({
       // 2. Dịch chuyển và scale Input
       ...(translateY
         ? [
-            Animated.timing(translateY, {
-              toValue: -70,
-              duration: 200,
-              useNativeDriver: true,
-            }),
-          ]
+          Animated.timing(translateY, {
+            toValue: -70,
+            duration: 200,
+            useNativeDriver: true,
+          }),
+        ]
         : []),
       Animated.timing(animation.inputScale, {
         toValue: 0.95,
@@ -112,12 +112,12 @@ const Header: React.FC<HeaderProps> = ({
       }),
       ...(translateY
         ? [
-            Animated.timing(translateY, {
-              toValue: 0,
-              duration: 200,
-              useNativeDriver: true,
-            }),
-          ]
+          Animated.timing(translateY, {
+            toValue: 0,
+            duration: 200,
+            useNativeDriver: true,
+          }),
+        ]
         : []),
       Animated.timing(animation.inputScale, {
         toValue: 1,
@@ -212,7 +212,7 @@ const Header: React.FC<HeaderProps> = ({
                   <SearchInput
                     value={searchValue}
                     pointEvents={isSearchMode ? "auto" : "none"}
-                    onChangeText={onSearchChange || (() => {})}
+                    onChangeText={onSearchChange || (() => { })}
                     placeholder="Tìm kiếm tin nhắn, nhóm"
                     className="flex-1"
                     inputRef={inputRef}

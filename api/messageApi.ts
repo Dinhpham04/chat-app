@@ -18,15 +18,15 @@ export interface Message {
   sender: MessageSender;
   content: string | undefined;
   type:
-    | "text"
-    | "image"
-    | "video"
-    | "audio"
-    | "file"
-    | "location"
-    | "contact"
-    | "sticker"
-    | "system";
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "file"
+  | "location"
+  | "contact"
+  | "sticker"
+  | "system";
   attachments?: Array<{
     fileId?: string;
     fileName?: string;
@@ -51,7 +51,7 @@ export interface Message {
   }>;
   replyToMessageId?: string;
   mentions?: string[];
-  status: "sent" | "delivered" | "read";
+  status: "sending" | "sent" | "delivered" | "read" | "failed";
   createdAt: string;
   updatedAt: string;
 }
@@ -61,15 +61,15 @@ export interface SendMessageRequest {
   conversationId: string;
   content?: string;
   type?:
-    | "text"
-    | "image"
-    | "video"
-    | "audio"
-    | "file"
-    | "location"
-    | "contact"
-    | "sticker"
-    | "system";
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "file"
+  | "location"
+  | "contact"
+  | "sticker"
+  | "system";
   attachments?: Array<{
     fileId: string;
     fileName: string;

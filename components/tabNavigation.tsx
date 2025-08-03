@@ -36,9 +36,8 @@ const TabNavigation: React.FC<TabNavigationProps> = ({
                 onPress={() => onTabPress(tab.id)}
               >
                 <Text
-                  className={`font-roboto ${
-                    tab.active ? "text-white" : "text-gray-600 font-nunito"
-                  }`}
+                  className={`font-roboto ${tab.active ? "text-white" : "text-gray-600 font-nunito"
+                    }`}
                 >
                   {tab.label}
                 </Text>
@@ -51,9 +50,8 @@ const TabNavigation: React.FC<TabNavigationProps> = ({
               onPress={() => onTabPress(tab.id)}
             >
               <Text
-                className={`font-roboto ${
-                  tab.active ? "text-white" : "text-gray-600 font-nunito"
-                }`}
+                className={`font-roboto ${tab.active ? "text-white" : "text-gray-600 font-nunito"
+                  }`}
               >
                 {tab.label}
               </Text>

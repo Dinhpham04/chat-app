@@ -8,6 +8,8 @@ interface MessageCardProps {
     id: number;
     name: string;
     lastMessage: string;
+    lastMessageSenderId?: string; // ID của người gửi tin nhắn cuối
+    lastMessageSenderName?: string; // Tên người gửi tin nhắn cuối
     time: string;
     avatar: string;
     online?: boolean;
@@ -15,7 +17,9 @@ interface MessageCardProps {
     typing?: boolean;
     hasVoice?: boolean;
     unreadCount?: number;
+    type?: 'direct' | 'group'; // Loại conversation
   };
+  currentUserId?: string; // ID của user hiện tại
   onPress: (id: number) => void;
   onDelete?: (id: number) => void;
   onPin?: (id: number) => void;
@@ -28,6 +32,7 @@ interface MessageCardProps {
 
 const MessageCard: React.FC<MessageCardProps> = ({
   chat,
+  currentUserId,
   onPress,
   onDelete,
   onPin,
@@ -39,6 +44,54 @@ const MessageCard: React.FC<MessageCardProps> = ({
 }) => {
   const pressStart = useRef(0);
   const [imageError, setImageError] = useState(false);
+
+  // Tạo display message với logic hiển thị tên người gửi
+  const getDisplayMessage = () => {
+    const { lastMessage, lastMessageSenderId, lastMessageSenderName, type } = chat;
+
+    console.log(`💬 getDisplayMessage for ${chat.id}:`, {
+      lastMessage,
+      lastMessageSenderId,
+      lastMessageSenderName,
+      type,
+      currentUserId,
+      typing: chat.typing,
+    });
+
+    // Nếu đang typing, hiển thị message typing
+    if (chat.typing) {
+      console.log(`💬 ${chat.id}: Showing typing message`);
+      return lastMessage;
+    }
+
+    // Nếu không có thông tin người gửi, chỉ hiển thị message
+    if (!lastMessageSenderId) {
+      console.log(`💬 ${chat.id}: No sender ID, showing message only`);
+      return `${chat.hasVoice ? "🎵 " : ""}${lastMessage}`;
+    }
+
+    // Nếu là tin nhắn của user hiện tại
+    if (lastMessageSenderId === currentUserId) {
+      console.log(`💬 ${chat.id}: Message from current user, showing "Bạn:"`);
+      return `Bạn: ${chat.hasVoice ? "🎵 " : ""}${lastMessage}`;
+    }
+
+    // Nếu là conversation direct (1-on-1), không hiển thị tên người gửi
+    if (type === 'direct') {
+      console.log(`💬 ${chat.id}: Direct conversation, hiding sender name`);
+      return `${chat.hasVoice ? "🎵 " : ""}${lastMessage}`;
+    }
+
+    // Nếu là conversation group, hiển thị tên người gửi
+    if (type === 'group' && lastMessageSenderName) {
+      console.log(`💬 ${chat.id}: Group conversation, showing sender name: ${lastMessageSenderName}`);
+      return `${lastMessageSenderName}: ${chat.hasVoice ? "🎵 " : ""}${lastMessage}`;
+    }
+
+    // Fallback: chỉ hiển thị message
+    console.log(`💬 ${chat.id}: Fallback, showing message only`);
+    return `${chat.hasVoice ? "🎵 " : ""}${lastMessage}`;
+  };
   // console.log("openRow", openRow);
   // console.log("isSwipingId", isSwipingId);
   const renderRightActions = (progress: any, dragX: any) => {
@@ -170,7 +223,7 @@ const MessageCard: React.FC<MessageCardProps> = ({
             className="w-14 h-14 rounded-full"
             resizeMode="cover"
             onError={() => setImageError(true)}
-            style={{ width: 56, height: 56 }}
+            style={{ width: 56, height: 56, marginRight: 12 }}
           />
           {chat.online && (
             <View className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 rounded-full border-2 border-white"></View>
@@ -183,29 +236,38 @@ const MessageCard: React.FC<MessageCardProps> = ({
         </View>
 
         <View className="flex-1 ml-6">
-          <View className="flex flex-row items-center justify-between">
-            <View className="flex mt-1">
-              <Text className="font-semibold text-gray-800 text-base font-manrope">
+          <View className="flex flex-row items-start justify-between">
+            {/* Left side - Name and message with constrained width */}
+            <View className="flex-1 mr-3">
+              <Text
+                className="font-semibold text-gray-800 text-base font-manrope"
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
                 {chat.name}
               </Text>
               {chat.typing ? (
                 <Text
                   className="text-blue-500 text-sm italic font-roboto"
                   style={{ color: "#3b82f6" }}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
                 >
-                  {chat.lastMessage}
+                  {getDisplayMessage()}
                 </Text>
               ) : (
                 <Text
                   className="text-gray-600 text-sm font-nunito"
                   numberOfLines={1}
+                  ellipsizeMode="tail"
                 >
-                  {chat.hasVoice && "🎵 "}
-                  {chat.lastMessage}
+                  {getDisplayMessage()}
                 </Text>
               )}
             </View>
-            <View className="flex items-end">
+
+            {/* Right side - Time and unread count with fixed width */}
+            <View className="flex items-end justify-start" style={{ minWidth: 60 }}>
               <Text className="text-gray-500 text-sm font-nunito">
                 {chat.time}
               </Text>

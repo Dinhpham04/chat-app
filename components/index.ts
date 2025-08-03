@@ -8,3 +8,4 @@ export { default as SearchInput } from "./searchInput";
 export { default as SearchModal } from "./searchModal";
 export { default as SecureImage } from "./secureImage";
 export { default as TabNavigation } from "./tabNavigation";
+export { ConnectionStatus } from "./ConnectionStatus";

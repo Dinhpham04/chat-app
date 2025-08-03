@@ -6,6 +6,7 @@ import {
   sendMessage,
 } from "@/api/messageApi";
 import { uploadFile } from "@/api/uploadFile";
+import { ConnectionStatus } from "@/components";
 import { images } from "@/constants/images";
 import { showError, showSuccess } from "@/utils/customToast";
 import { getAccount } from "@/utils/secureStore";
@@ -17,7 +18,6 @@ import FontAwesome6 from "@expo/vector-icons/FontAwesome6";
 import { Audio } from "expo-av";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import { LinearGradient } from "expo-linear-gradient";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -50,7 +50,7 @@ interface NewMessagePayload {
   fileInfo?: any; // fallback cho server cũ
 }
 const replaceLocalhost = (url: string) => {
-  return url.replace("localhost:3000", "192.168.1.11:3000");
+  return url.replace("localhost:3000", "192.168.1.16:3000");
 };
 const AuthenticatedImage = ({
   imageUrl,
@@ -142,6 +142,7 @@ const MessageScreen = () => {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [audioUri, setAudioUri] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [isSocketConnected, setIsSocketConnected] = useState(false);
 
   const inputAnim = useRef(new Animated.Value(0)).current;
   const inputRef = useRef<TextInput>(null);
@@ -205,7 +206,6 @@ const MessageScreen = () => {
       console.log("📝 Messages loaded:", messageList.length);
 
       setMessages(messageList.reverse()); // Reverse to show newest at bottom
-      console.log(messages);
     } catch (error) {
       console.error("Error fetching messages:", error);
       showError("Không thể tải tin nhắn");
@@ -213,6 +213,8 @@ const MessageScreen = () => {
       setLoading(false);
     }
   };
+
+  // Handle new message callback
   const handleNewMessage = useCallback(
     (newMessage: Message) => {
       if (!newMessage) {
@@ -269,6 +271,43 @@ const MessageScreen = () => {
     },
     [conversationId]
   );
+
+  // Handle file message
+  const handleFileMessage = useCallback((data: any) => {
+    console.log("📎 File message received:", data);
+    if (data.conversationId === conversationId) {
+      const fileMessage: Message = {
+        id: data.id,
+        conversationId: data.conversationId,
+        senderId: data.senderId,
+        sender: {
+          id: data.senderId,
+          fullName: data.senderName || "User",
+          username: data.senderId,
+          avatarUrl: null,
+          isOnline: true,
+          lastSeen: new Date().toISOString(),
+        },
+        content: data.content || "Tệp đính kèm",
+        type: data.messageType || "file",
+        attachments: data.fileInfo ? [
+          {
+            fileId: data.fileInfo.id,
+            fileName: data.fileInfo.fileName,
+            fileSize: data.fileInfo.fileSize,
+            mimeType: data.fileInfo.mimeType,
+            downloadUrl: data.fileInfo.downloadUrl,
+            thumbnailUrl: data.fileInfo.thumbnailUrl,
+          },
+        ] : [],
+        status: "sent",
+        createdAt: new Date(data.timestamp).toISOString(),
+        updatedAt: new Date(data.timestamp).toISOString(),
+      };
+
+      handleNewMessage(fileMessage);
+    }
+  }, [conversationId, handleNewMessage]);
   const handleAttachFile = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -389,21 +428,30 @@ const MessageScreen = () => {
   ) => {
     try {
       setUploading(true);
+      console.log("📤 Starting file upload:", { uri, type, fileName });
 
       const response = await uploadFile(uri);
-      console.log("file", response);
+      console.log("📤 File upload response:", response);
 
-      // Prepare message data based on file type
+      // Determine message type based on MIME type
+      const messageType = response.mimeType.startsWith("image/")
+        ? "image"
+        : response.mimeType.startsWith("audio/")
+          ? "audio"
+          : response.mimeType.startsWith("video/")
+            ? "video"
+            : "file";
+
+      // Prepare message data for socket
       const messageData = {
         fileId: response.fileId,
         conversationId: conversationId,
-        message: message,
+        message: message || "", // Use current message text as caption
         fileMetadata: {
-          fileName: response.fileName,
+          fileName: response.originalName || response.fileName,
           fileId: response.fileId,
           fileSize: response.fileSize,
-          mimeType:
-            response.mimeType === "document" ? "file" : response.mimeType,
+          mimeType: response.mimeType,
           downloadUrl: response.downloadUrl,
           thumbnailUrl: response.thumbnailUrl,
           duration: response.duration,
@@ -411,10 +459,10 @@ const MessageScreen = () => {
         },
       };
 
-      // Create optimistic message
+      // Create optimistic message for UI
       const optimisticMessage: Message = {
-        id: `local_${Date.now()}`,
-        localId: `local_${Date.now()}`,
+        id: `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        localId: `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         conversationId,
         senderId: currentUserId || "current_user",
         sender: {
@@ -425,42 +473,87 @@ const MessageScreen = () => {
           isOnline: true,
           lastSeen: new Date().toISOString(),
         },
-        content: (response.fileName as string) || "Tệp đính kèm",
-        type: type,
+        content: message || (response.originalName || response.fileName),
+        type: messageType,
+        messageType: messageType,
         attachments: [
-          // Đảm bảo có mảng attachments
           {
             fileId: response.fileId,
-            fileName: response.fileName, // Sử dụng tên file thực tế
+            fileName: response.originalName || response.fileName,
             fileSize: response.fileSize,
             mimeType: response.mimeType,
             downloadUrl: response.downloadUrl,
+            thumbnailUrl: response.thumbnailUrl,
           },
         ],
-        status: "sent",
+        status: "sending",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
 
-      // Send via socket
-      if (socketManager.isSocketConnected()) {
-        socketManager.quickShareFile(messageData);
-        console.log("gui thang cong", messageData);
-        // Update optimistic message status to sent
-        // setLocalMessages((prev) => ({
-        //   ...prev,
-        //   [optimisticMessage.localId!]: {
-        //     ...prev[optimisticMessage.localId!],
-        //     status: "sent",
-        //   },
-        // }));
-        // handleNewMessage(optimisticMessage);
-      } else {
-        // Fallback to REST API
-        await sendMessage(messageData);
+      console.log("📤 Created optimistic file message:", optimisticMessage);
+
+      // Add optimistic message to UI
+      setLocalMessages((prev) => ({
+        ...prev,
+        [optimisticMessage.localId!]: optimisticMessage,
+      }));
+      handleNewMessage(optimisticMessage);
+
+      // Clear message input after file upload
+      setMessage("");
+
+      try {
+        // Send via socket (preferred method)
+        if (socketManager.isSocketConnected()) {
+          console.log("📤 Sending file via Socket.IO:", messageData);
+          socketManager.quickShareFile(messageData);
+
+          // Update optimistic message status
+          setLocalMessages((prev) => ({
+            ...prev,
+            [optimisticMessage.localId!]: {
+              ...prev[optimisticMessage.localId!],
+              status: "sent",
+            },
+          }));
+
+          console.log("✅ File sent via Socket.IO successfully");
+        } else {
+          // Fallback to REST API
+          console.log("📤 Socket not connected, using REST API fallback");
+          const serverMessage = await sendMessage(messageData);
+
+          // Update optimistic message with server response
+          setLocalMessages((prev) => ({
+            ...prev,
+            [optimisticMessage.localId!]: {
+              ...prev[optimisticMessage.localId!],
+              id: serverMessage.id,
+              status: "sent",
+            },
+          }));
+
+          console.log("✅ File sent via REST API successfully");
+          showSuccess("Tệp đã được gửi!");
+        }
+      } catch (sendError) {
+        console.error("❌ Error sending file message:", sendError);
+
+        // Update optimistic message status to failed
+        setLocalMessages((prev) => ({
+          ...prev,
+          [optimisticMessage.localId!]: {
+            ...prev[optimisticMessage.localId!],
+            status: "failed",
+          },
+        }));
+
+        showError("Không thể gửi tệp. Vui lòng thử lại.");
       }
+
     } catch (error) {
-      console.error("Error uploading file:", error);
+      console.error("❌ Error uploading file:", error);
       showError("Không thể tải lên tệp");
     } finally {
       setUploading(false);
@@ -630,97 +723,107 @@ const MessageScreen = () => {
   }, [conversationId]);
   // Socket event handlers
   useEffect(() => {
-    socketManager.connect().then(() => {
-      socketManager.joinConversation(conversationId);
-    });
-
-    // Listen for new file shared events
-    const handleFileShared = (data: any) => {
-      console.log("📎 File shared event received:", data);
-      if (data.conversationId === conversationId) {
-        // Convert to message format
-        const fileMessage: Message = {
-          id: data.fileId || data.messageId, // Sử dụng messageId nếu có
-          conversationId: data.conversationId,
-          senderId: data.sharedBy || currentUserId,
-          sender: {
-            id: data.sharedBy || currentUserId,
-            fullName: "User",
-            username: data.sharedBy || currentUserId,
-            avatarUrl: null,
-            isOnline: true,
-            lastSeen: new Date().toISOString(),
-          },
-          content: data.fileName || "Tệp đính kèm",
-          type: data.type || "file", // Có thể lấy từ data nếu server gửi
-          attachments: [
-            {
-              fileId: data.fileId,
-              fileName: data.fileName,
-              fileSize: data.fileSize || 0,
-              mimeType: data.mimeType || "",
-              downloadUrl: data.downloadUrl || "",
-              thumbnailUrl: data.thumbnailUrl || undefined,
-            },
-          ],
-          status: "sent",
-          createdAt: new Date(data.timestamp || Date.now()).toISOString(),
-          updatedAt: new Date(data.timestamp || Date.now()).toISOString(),
-        };
-        setLocalMessages((prev) => ({
-          ...prev,
-          [fileMessage.localId!]: {
-            ...prev[fileMessage.localId!],
-            status: "sent",
-          },
-        }));
-        handleNewMessage(fileMessage);
+    // Ensure socket connection
+    const initializeSocket = async () => {
+      try {
+        if (!socketManager.isSocketConnected()) {
+          console.log("🔌 Connecting to socket...");
+          await socketManager.connect();
+        }
+        setIsSocketConnected(socketManager.isSocketConnected());
+        socketManager.joinConversation(conversationId);
+        console.log("✅ Socket initialized and joined conversation");
+      } catch (error) {
+        console.error("❌ Socket initialization failed:", error);
+        setIsSocketConnected(false);
       }
     };
+
+    initializeSocket();
+
+    // Monitor connection status
+    const checkConnection = () => {
+      const connected = socketManager.isSocketConnected();
+      setIsSocketConnected(connected);
+      if (connected) {
+        console.log("✅ Socket connected");
+      } else {
+        console.log("❌ Socket disconnected");
+      }
+    };
+
+    // Check connection status periodically
+    const connectionInterval = setInterval(checkConnection, 5000);
+
+    // Listen for connection events
+    const socketInstance = socketManager.getSocket();
+    if (socketInstance) {
+      socketInstance.on("connect", () => {
+        console.log("✅ Socket connected event");
+        setIsSocketConnected(true);
+      });
+
+      socketInstance.on("disconnect", () => {
+        console.log("❌ Socket disconnected event");
+        setIsSocketConnected(false);
+      });
+
+      socketInstance.on("connect_error", (error: any) => {
+        console.error("❌ Socket connection error:", error);
+        setIsSocketConnected(false);
+      });
+    }
 
     // Listen for new file message from server (main event for file messages)
     const handleNewFileMessage = (data: any) => {
       console.log("📎 New file message received:", data);
       if (data.conversationId === conversationId) {
         // Check if this message already exists to prevent duplicates
-        const messageExists = messages.some(msg => msg.id === data.id);
-        if (messageExists) {
-          console.log("📎 File message already exists, skipping:", data.id);
-          return;
-        }
+        setMessages((prevMessages) => {
+          const messageExists = prevMessages.some(msg => msg.id === data.id);
+          if (messageExists) {
+            console.log("📎 File message already exists, skipping:", data.id);
+            return prevMessages;
+          }
 
-        // Convert to message format - use data from backend
-        const fileMessage: Message = {
-          id: data.id, // Use message ID from backend
-          conversationId: data.conversationId,
-          senderId: data.senderId,
-          sender: {
-            id: data.senderId,
-            fullName: data.senderName || "User",
-            username: data.senderId,
-            avatarUrl: null,
-            isOnline: true,
-            lastSeen: new Date().toISOString(),
-          },
-          content: data.content || "Tệp đính kèm",
-          type: data.messageType || "file",
-          attachments: data.fileInfo ? [
-            {
-              fileId: data.fileInfo.id,
-              fileName: data.fileInfo.fileName,
-              fileSize: data.fileInfo.fileSize,
-              mimeType: data.fileInfo.mimeType,
-              downloadUrl: data.fileInfo.downloadUrl,
-              thumbnailUrl: data.fileInfo.thumbnailUrl,
+          // Convert to message format - use data from backend
+          const fileMessage: Message = {
+            id: data.id, // Use message ID from backend
+            conversationId: data.conversationId,
+            senderId: data.senderId,
+            sender: {
+              id: data.senderId,
+              fullName: data.senderName || "User",
+              username: data.senderId,
+              avatarUrl: null,
+              isOnline: true,
+              lastSeen: new Date().toISOString(),
             },
-          ] : [],
-          status: "sent",
-          createdAt: new Date(data.timestamp).toISOString(),
-          updatedAt: new Date(data.timestamp).toISOString(),
-        };
+            content: data.content || "Tệp đính kèm",
+            type: data.messageType || "file",
+            attachments: data.fileInfo ? [
+              {
+                fileId: data.fileInfo.id,
+                fileName: data.fileInfo.fileName,
+                fileSize: data.fileInfo.fileSize,
+                mimeType: data.fileInfo.mimeType,
+                downloadUrl: data.fileInfo.downloadUrl,
+                thumbnailUrl: data.fileInfo.thumbnailUrl,
+              },
+            ] : [],
+            status: "sent",
+            createdAt: new Date(data.timestamp).toISOString(),
+            updatedAt: new Date(data.timestamp).toISOString(),
+          };
 
-        console.log("📎 Adding file message to chat:", fileMessage);
-        handleNewMessage(fileMessage);
+          console.log("📎 Adding file message to chat:", fileMessage);
+          return [...prevMessages, fileMessage];
+        });
+
+        // Auto scroll
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
       }
     };
 
@@ -728,82 +831,52 @@ const MessageScreen = () => {
     const handleNewBatchFilesMessage = (data: any) => {
       console.log("📎 New batch files message received:", data);
       if (data.conversationId === conversationId) {
-        // Check if this message already exists to prevent duplicates
-        const messageExists = messages.some(msg => msg.id === data.id);
-        if (messageExists) {
-          console.log("📎 Batch files message already exists, skipping:", data.id);
-          return;
-        }
+        setMessages((prevMessages) => {
+          const messageExists = prevMessages.some(msg => msg.id === data.id);
+          if (messageExists) {
+            console.log("📎 Batch files message already exists, skipping:", data.id);
+            return prevMessages;
+          }
 
-        // Convert to message format with multiple attachments
-        const fileMessage: Message = {
-          id: data.id,
-          conversationId: data.conversationId,
-          senderId: data.senderId,
-          sender: {
-            id: data.senderId,
-            fullName: data.senderName || "User",
-            username: data.senderId,
-            avatarUrl: null,
-            isOnline: true,
-            lastSeen: new Date().toISOString(),
-          },
-          content: data.content || "Nhiều tệp đính kèm",
-          type: data.messageType || "file",
-          attachments: data.filesInfo ? data.filesInfo.map((fileInfo: any) => ({
-            fileId: fileInfo.id,
-            fileName: fileInfo.fileName,
-            fileSize: fileInfo.fileSize,
-            mimeType: fileInfo.mimeType,
-            downloadUrl: fileInfo.downloadUrl,
-            thumbnailUrl: fileInfo.thumbnailUrl,
-          })) : [],
-          status: "sent",
-          createdAt: new Date(data.timestamp).toISOString(),
-          updatedAt: new Date(data.timestamp).toISOString(),
-        };
-
-        console.log("📎 Adding batch files message to chat:", fileMessage);
-        handleNewMessage(fileMessage);
-      }
-    };
-
-    const handleBatchFilesShared = (data: any) => {
-      console.log("📎 Batch files shared event received:", data);
-      if (data.conversationId === conversationId) {
-        data.files.forEach((file: any) => {
+          // Convert to message format with multiple attachments
           const fileMessage: Message = {
-            id: file.fileId,
+            id: data.id,
             conversationId: data.conversationId,
-            senderId: data.sharedBy,
+            senderId: data.senderId,
             sender: {
-              id: data.sharedBy,
-              fullName: "User",
-              username: data.sharedBy,
+              id: data.senderId,
+              fullName: data.senderName || "User",
+              username: data.senderId,
               avatarUrl: null,
               isOnline: true,
               lastSeen: new Date().toISOString(),
             },
-            content: file.fileName,
-            type: "file",
-            attachments: [
-              {
-                fileId: file.fileId,
-                fileName: file.fileName,
-                fileSize: file.fileSize,
-                mimeType: file.fileType,
-                downloadUrl: "",
-              },
-            ],
+            content: data.content || "Nhiều tệp đính kèm",
+            type: data.messageType || "file",
+            attachments: data.filesInfo ? data.filesInfo.map((fileInfo: any) => ({
+              fileId: fileInfo.id,
+              fileName: fileInfo.fileName,
+              fileSize: fileInfo.fileSize,
+              mimeType: fileInfo.mimeType,
+              downloadUrl: fileInfo.downloadUrl,
+              thumbnailUrl: fileInfo.thumbnailUrl,
+            })) : [],
             status: "sent",
             createdAt: new Date(data.timestamp).toISOString(),
             updatedAt: new Date(data.timestamp).toISOString(),
           };
 
-          handleNewMessage(fileMessage);
+          console.log("📎 Adding batch files message to chat:", fileMessage);
+          return [...prevMessages, fileMessage];
         });
+
+        // Auto scroll
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
       }
     };
+
     // Listen for typing indicators
     const handleTyping = (data: any) => {
       if (data.conversationId === conversationId) {
@@ -891,12 +964,13 @@ const MessageScreen = () => {
 
     // Listen for last messages response from server
     const handleLastMessagesResponse = (data: {
-      updates: LastMessageUpdatePayload[];
+      updates: any[];
     }) => {
       console.log("📨 Last messages response received:", data);
       const conversationUpdate = data.updates.find(
         (update) => update.conversationId === conversationId
       );
+      console.log("📨 Found conversation update:", conversationUpdate);
       if (conversationUpdate) {
         setLastMessage(conversationUpdate.lastMessage);
         setUnreadCount(conversationUpdate.unreadCount);
@@ -911,6 +985,8 @@ const MessageScreen = () => {
     socketManager.onMessage(handleNewMessage);
     socketManager.onTyping(handleTyping);
     socketManager.onStatusUpdate(handleStatusUpdate);
+
+    // File event handling
     socketManager.onFileEvent((data) => {
       if (data.type === "new_file_message") {
         handleNewFileMessage(data);
@@ -918,21 +994,16 @@ const MessageScreen = () => {
         handleNewBatchFilesMessage(data);
       }
     });
-    // Fallback listeners for specific events
-    socketManager.getSocket()?.on("quick_file_shared", handleFileShared);
-    socketManager.getSocket()?.on("batch_files_shared", handleBatchFilesShared);
-    socketManager.getSocket()?.on("new_file_message", handleNewFileMessage);
-    socketManager.getSocket()?.on("new_batch_files_message", handleNewBatchFilesMessage);
-    // Listen for new messages from socket
-    socketManager.getSocket()?.on("new_message", handleSocketNewMessage);
 
-    // Listen for last message updates
-    socketManager
-      .getSocket()
-      ?.on("conversation_last_message_update", handleLastMessageUpdate);
-    socketManager
-      .getSocket()
-      ?.on("conversations_last_messages_response", handleLastMessagesResponse);
+    // Direct socket event listeners for fallback
+    const socket = socketManager.getSocket();
+    if (socket) {
+      socket.on("new_file_message", handleNewFileMessage);
+      socket.on("new_batch_files_message", handleNewBatchFilesMessage);
+      socket.on("new_message", handleSocketNewMessage);
+      socket.on("conversation_last_message_update", handleLastMessageUpdate);
+      socket.on("conversations_last_messages_response", handleLastMessagesResponse);
+    }
 
     // Load initial data
     getConversations();
@@ -957,29 +1028,31 @@ const MessageScreen = () => {
       socketManager.requestLastMessages([conversationId]);
     }
 
-    // Cleanup
+    // Cleanup function
     return () => {
-      socketManager.offFileEvent(handleFileShared);
-      socketManager.getSocket()?.off("quick_file_shared", handleFileShared);
-      socketManager
-        .getSocket()
-        ?.off("batch_files_shared", handleBatchFilesShared);
-      socketManager.getSocket()?.off("new_file_message", handleNewFileMessage);
-      socketManager.getSocket()?.off("new_batch_files_message", handleNewBatchFilesMessage);
+      // Clear connection interval
+      clearInterval(connectionInterval);
+
+      // Clean up socket events
+      if (socketInstance) {
+        socketInstance.off("connect");
+        socketInstance.off("disconnect");
+        socketInstance.off("connect_error");
+      }
+
       socketManager.leaveConversation(conversationId);
       socketManager.offMessage(handleNewMessage);
       socketManager.offTyping(handleTyping);
       socketManager.offStatusUpdate(handleStatusUpdate);
-      socketManager.getSocket()?.off("new_message", handleSocketNewMessage);
-      socketManager
-        .getSocket()
-        ?.off("conversation_last_message_update", handleLastMessageUpdate);
-      socketManager
-        .getSocket()
-        ?.off(
-          "conversations_last_messages_response",
-          handleLastMessagesResponse
-        );
+
+      const socket = socketManager.getSocket();
+      if (socket) {
+        socket.off("new_file_message", handleNewFileMessage);
+        socket.off("new_batch_files_message", handleNewBatchFilesMessage);
+        socket.off("new_message", handleSocketNewMessage);
+        socket.off("conversation_last_message_update", handleLastMessageUpdate);
+        socket.off("conversations_last_messages_response", handleLastMessagesResponse);
+      }
     };
   }, [conversationId]);
 
@@ -1114,7 +1187,9 @@ const MessageScreen = () => {
       if (item.type === "text" || item.messageType === "text") {
         // Chỉ hiển thị text thuần túy khi không có attachment
         return (
-          <Text className={`font-nunito ${isOwnMessage ? "text-white" : ""}`}>
+          <Text
+            className={`font-nunito text-base ${isOwnMessage ? "text-white" : "text-gray-900"}`}
+          >
             {item.content}
           </Text>
         );
@@ -1132,25 +1207,22 @@ const MessageScreen = () => {
                 token={token}
               />
             ) : (
-              <View className="flex flex-row items-center space-x-2 p-2 bg-white/20 rounded-lg">
-                <View className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center">
+              <View className="flex flex-row items-center space-x-2 p-3 bg-white/90 rounded-xl">
+                <View className="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center">
                   {isAudio ? (
                     <FontAwesome name="music" size={16} color="white" />
                   ) : (
                     <AntDesign name="file1" size={16} color="white" />
                   )}
                 </View>
-                <View className="">
+                <View className="flex-1">
                   <Text
-                    className={`font-medium text-sm p-2 ${isOwnMessage ? "text-white" : "text-gray-800"
+                    className={`font-medium text-sm ${isOwnMessage ? "text-gray-800" : "text-gray-800"
                       }`}
                   >
                     {attachment?.fileName || "Tệp đính kèm"}
                   </Text>
-                  <Text
-                    className={`text-xs opacity-70 ${isOwnMessage ? "text-white" : "text-gray-600"
-                      }`}
-                  >
+                  <Text className="text-xs text-gray-600">
                     {attachment?.fileSize
                       ? `${(attachment.fileSize / 1024 / 1024).toFixed(2)} MB`
                       : "File"}
@@ -1161,7 +1233,7 @@ const MessageScreen = () => {
             {/* Hiển thị text kèm theo nếu có */}
             {item.content && item.content !== attachment?.fileName && (
               <Text
-                className={`font-nunito text-sm ${isOwnMessage ? "text-white" : ""
+                className={`font-nunito text-sm ${isOwnMessage ? "text-white" : "text-gray-900"
                   }`}
               >
                 {item.content}
@@ -1173,17 +1245,17 @@ const MessageScreen = () => {
         // Fallback for non-text messages without attachments
         return (
           <View className="flex flex-row items-center space-x-2">
-            <View className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center">
+            <View className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
               <AntDesign name="file1" size={16} color="white" />
             </View>
             <View>
               <Text
-                className={`font-medium ${isOwnMessage ? "text-white" : ""}`}
+                className={`font-medium ${isOwnMessage ? "text-white" : "text-gray-900"}`}
               >
                 {item.content}
               </Text>
               <Text
-                className={`text-xs opacity-70 ${isOwnMessage ? "text-white" : ""
+                className={`text-xs ${isOwnMessage ? "text-white/70" : "text-gray-600"
                   }`}
               >
                 {item.type === "image"
@@ -1201,8 +1273,8 @@ const MessageScreen = () => {
     return (
       <>
         {shouldShowTimestamp && (
-          <View className="items-center my-2">
-            <Text className="text-xs text-gray-500 bg-gray-200 px-3 py-1 rounded-full">
+          <View className="items-center my-3">
+            <Text className="text-xs text-gray-400 bg-gray-100 px-3 py-2 rounded-full font-medium">
               {formatTimestamp()}
             </Text>
           </View>
@@ -1212,17 +1284,27 @@ const MessageScreen = () => {
           className={`mb-1 ${isOwnMessage ? "items-end" : "items-start"} flex`}
         >
           {isOwnMessage ? (
-            <LinearGradient
-              colors={["#f9c0e4", "#6e00ff"]}
-              start={{ x: 0, y: 0.5 }}
-              end={{ x: 1, y: 0.5 }}
-              style={{ borderRadius: 16, maxWidth: "90%" }}
-              className="max-w-xs"
+            <View
+              style={{
+                backgroundColor: '#0084FF',
+                borderRadius: 18,
+                maxWidth: '85%',
+                paddingHorizontal: 16,
+                paddingVertical: 10
+              }}
             >
-              <View className="px-4 py-3">{renderMessageContent()}</View>
-            </LinearGradient>
+              <View>{renderMessageContent()}</View>
+            </View>
           ) : (
-            <View className="max-w-xs px-4 py-3 rounded-2xl bg-gray-100 rounded-bl-md">
+            <View
+              style={{
+                backgroundColor: '#F0F0F0',
+                borderRadius: 18,
+                maxWidth: '85%',
+                paddingHorizontal: 16,
+                paddingVertical: 10
+              }}
+            >
               {renderMessageContent()}
             </View>
           )}
@@ -1237,7 +1319,7 @@ const MessageScreen = () => {
                 </Text>
                 {isOwnMessage && (
                   <View className="flex flex-row items-center">
-                    {item.status === "sent" && (
+                    {item.status === "sending" && (
                       <Text className="text-xs text-gray-400">Đang gửi...</Text>
                     )}
                     {item.status === "sent" && (
@@ -1265,9 +1347,17 @@ const MessageScreen = () => {
                         />
                       </View>
                     )}
-                    {/* {item.status === "failed" && (
-              <AntDesign name="exclamationcircle" size={12} color="#ef4444" />
-            )} */}
+                    {item.status === "failed" && (
+                      <TouchableOpacity
+                        onPress={() => {
+                          // Retry sending message
+                          console.log("Retry sending message:", item.id);
+                          showError("Chức năng thử lại sẽ được thêm sau");
+                        }}
+                      >
+                        <AntDesign name="exclamationcircle" size={12} color="#ef4444" />
+                      </TouchableOpacity>
+                    )}
                   </View>
                 )}
               </View>
@@ -1285,30 +1375,26 @@ const MessageScreen = () => {
         <View className="flex-1 bg-gray-50">
           <Stack.Screen options={{ headerShown: false }} />
 
-          {/* Header */}
-          <View className="bg-transparent px-6 py-4">
-            <View className="flex flex-row justify-between items-center">
-              <View className="flex flex-row items-center">
+          {/* Header - Messenger Style */}
+          <View className="bg-white border-b border-gray-100 shadow-sm">
+            <View className="flex-row items-center justify-between px-4 py-3">
+              <View className="flex-row items-center flex-1">
                 <TouchableOpacity
                   onPress={() => router.back()}
-                  className="mr-4"
+                  className="mr-3 p-1"
+                  activeOpacity={0.7}
                 >
-                  <AntDesign
-                    name="arrowleft"
-                    size={24}
-                    color="#a855f7"
-                    className="p-4"
-                  />
+                  <AntDesign name="arrowleft" size={24} color="#000" />
                 </TouchableOpacity>
+
                 <TouchableOpacity
-                  className="flex flex-row"
-                  onPress={() =>
-                    conversations &&
-                    router.push({
-                      pathname: "/messages/management/[id]",
-                      params: { id: String(conversations.id) },
-                    })
-                  }
+                  className="flex-row items-center flex-1"
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    if (conversations?.id) {
+                      router.push(`/profile/${conversations.id}`);
+                    }
+                  }}
                 >
                   <Image
                     source={
@@ -1318,33 +1404,51 @@ const MessageScreen = () => {
                     }
                     className="w-10 h-10 rounded-full mr-3"
                   />
-                  <View>
-                    <View className="flex-row items-center">
-                      <Text className="font-bold font-manrope">
-                        {conversations?.name}
-                      </Text>
-                      {unreadCount > 0 && (
-                        <Text className="ml-2 bg-red-500 text-white text-xs px-2 py-1 rounded-full">
-                          {unreadCount}
-                        </Text>
-                      )}
-                    </View>
-                    <Text className="text-sm font-nunito">
-                      {socketManager.isSocketConnected()
-                        ? "🟢 Online (Real-time)"
-                        : "🔴 Offline (API only)"}
+                  <View className="flex-1">
+                    <Text className="font-semibold text-base text-gray-900 font-manrope">
+                      {conversations?.name}
                     </Text>
+                    <ConnectionStatus
+                      isConnected={isSocketConnected}
+                      reconnectAttempts={0}
+                      maxReconnectAttempts={5}
+                      onRetry={async () => {
+                        try {
+                          console.log("🔄 Manual retry connection...");
+                          await socketManager.connect();
+                          setIsSocketConnected(socketManager.isSocketConnected());
+                          if (socketManager.isSocketConnected()) {
+                            socketManager.joinConversation(conversationId);
+                            showSuccess("Đã kết nối lại!");
+                          }
+                        } catch (error) {
+                          console.error("❌ Manual retry failed:", error);
+                          showError("Không thể kết nối lại");
+                        }
+                      }}
+                    />
                   </View>
                 </TouchableOpacity>
               </View>
 
-              <View className="flex flex-row space-x-2">
-                {/* Debug button */}
-                <TouchableOpacity className="p-2 bg-white/20 rounded-full">
-                  <FontAwesome name="phone" size={24} color="#a855f7" />
+              <View className="flex-row items-center space-x-3">
+                <TouchableOpacity
+                  className="p-2"
+                  activeOpacity={0.7}
+                >
+                  <FontAwesome name="phone" size={20} color="#0084FF" />
                 </TouchableOpacity>
-                <TouchableOpacity className="p-2 bg-white/20 rounded-full">
-                  <FontAwesome6 name="video" size={24} color="#a855f7" />
+                <TouchableOpacity
+                  className="p-2"
+                  activeOpacity={0.7}
+                >
+                  <FontAwesome6 name="video" size={20} color="#0084FF" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  className="p-2"
+                  activeOpacity={0.7}
+                >
+                  <Feather name="info" size={20} color="#0084FF" />
                 </TouchableOpacity>
               </View>
             </View>
@@ -1355,8 +1459,8 @@ const MessageScreen = () => {
             data={messages}
             renderItem={renderMessage}
             keyExtractor={(item) => item.id}
-            className="flex-1 p-4 bg-white"
-            contentContainerStyle={{ paddingBottom: 16 }}
+            className="flex-1 bg-white"
+            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 16 }}
             keyboardShouldPersistTaps="handled"
             ref={flatListRef}
             onContentSizeChange={() =>
@@ -1395,95 +1499,83 @@ const MessageScreen = () => {
             showsVerticalScrollIndicator={false}
           />
 
-          {/* Input */}
-          <View className="bg-white px-2 pt-3 border-t border-gray-200">
-            <View className="flex flex-row items-center space-x-3">
-              <View className="flex-row items-center px-4 bg-white">
-                {!inputFocused ? (
-                  <View className="flex flex-row justify-between items-center">
-                    <TouchableOpacity
-                      className="mr-3"
-                      onPress={handleAttachFile}
-                    >
-                      <AntDesign name="paperclip" size={24} color="#a855f7" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      className="mx-3"
-                      onPress={handleTakePhoto}
-                    >
-                      <AntDesign name="camera" size={24} color="#a855f7" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      className="mx-3"
-                      onPress={handlePickImage}
-                    >
-                      <AntDesign name="picture" size={24} color="#a855f7" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      className="mx-3"
-                      onPress={recording ? stopRecording : startRecording}
-                    >
-                      <FontAwesome
-                        name="microphone"
-                        size={24}
-                        color={recording ? "#ff0000" : "#a855f7"}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <TouchableOpacity
-                    className="mr-4 flex items-center"
-                    onPress={() => {
-                      if (inputRef.current) inputRef.current.blur();
-                    }}
-                  >
-                    <AntDesign name="left" size={24} color="#a855f7" />
-                  </TouchableOpacity>
-                )}
+          {/* Input Area - Messenger Style */}
+          <View className="bg-white px-4 py-3 border-t border-gray-100">
+            {/* Typing indicator */}
+            {typingUsers.length > 0 && (
+              <View className="px-2 py-2">
+                <Text className="text-sm text-gray-500 italic">
+                  {typingUsers.join(", ")} đang soạn tin...
+                </Text>
+              </View>
+            )}
 
-                <Animated.View
-                  style={{
-                    flex: 1,
-                    transform: [{ translateX: inputTranslate }],
-                  }}
-                >
-                  <View className="bg-gray-100 rounded-full flex-1 flex-row items-center">
-                    <TextInput
-                      value={message}
-                      onChangeText={setMessage}
-                      placeholder="Aa"
-                      className="flex-1 text-gray-800 font-medium w-full px-4"
-                      onFocus={handleFocus}
-                      onBlur={handleBlur}
-                      style={{ flex: 1 }}
-                      ref={inputRef}
-                      multiline
-                      maxLength={1000}
-                    />
-                    {message.length > 0 && (
-                      <TouchableOpacity
-                        onPress={() => setMessage("")}
-                        className="p-2"
-                      >
-                        <AntDesign name="close" size={18} color="#888" />
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                </Animated.View>
+            {/* Upload progress indicator */}
+            {uploading && (
+              <View className="px-3 py-2 bg-blue-50 rounded-full mx-2 mb-2">
+                <Text className="text-sm text-blue-600 text-center">📤 Đang tải lên...</Text>
+              </View>
+            )}
 
+            <View className="flex-row items-end space-x-2">
+              {/* Attachment buttons */}
+              <View className="flex-row items-center space-x-1">
                 <TouchableOpacity
-                  onPress={handleSendMessage}
-                  disabled={!message.trim() || sending}
-                  className={`ml-3 p-2 rounded-full ${message.trim() && !sending ? "bg-primary" : "bg-gray-300"
-                    }`}
+                  className="p-2"
+                  onPress={handleAttachFile}
+                  disabled={uploading}
+                  activeOpacity={0.7}
                 >
-                  <Feather
-                    name="send"
+                  <AntDesign
+                    name="plus"
                     size={20}
-                    color={message.trim() && !sending ? "white" : "#888"}
+                    color={uploading ? "#ccc" : "#0084FF"}
+                  />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  className="p-2"
+                  onPress={handlePickImage}
+                  disabled={uploading}
+                  activeOpacity={0.7}
+                >
+                  <AntDesign
+                    name="camera"
+                    size={20}
+                    color={uploading ? "#ccc" : "#0084FF"}
                   />
                 </TouchableOpacity>
               </View>
+              {/* Text Input Area */}
+              <View className="flex-1 bg-gray-100 rounded-full px-4 py-2 mx-2">
+                <TextInput
+                  value={message}
+                  onChangeText={setMessage}
+                  placeholder={uploading ? "Đang tải tệp..." : "Nhập tin nhắn..."}
+                  className="flex-1 text-gray-800 font-medium text-base"
+                  onFocus={handleFocus}
+                  onBlur={handleBlur}
+                  ref={inputRef}
+                  multiline
+                  maxLength={1000}
+                  editable={!uploading}
+                  style={{ minHeight: 40, maxHeight: 100 }}
+                />
+              </View>
+
+              {/* Send Button */}
+              <TouchableOpacity
+                onPress={handleSendMessage}
+                disabled={(!message.trim() || sending) || uploading}
+                className={`p-2 rounded-full ${(message.trim() && !sending && !uploading) ? "bg-blue-500" : "bg-gray-300"
+                  }`}
+                activeOpacity={0.7}
+              >
+                <Feather
+                  name="send"
+                  size={20}
+                  color={(message.trim() && !sending && !uploading) ? "white" : "#888"}
+                />
+              </TouchableOpacity>
             </View>
           </View>
         </View>

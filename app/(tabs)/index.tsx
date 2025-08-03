@@ -45,7 +45,7 @@ interface LastMessageUpdatePayload {
     messageType: string;
     senderId: string;
     senderName: string;
-    timestamp: number;
+    timestamp: any;
     filesInfo?: any[];
     fileInfo?: any;
   };
@@ -84,6 +84,7 @@ export default function Index() {
 
   const [chatData, setChatData] = useState<Chat[]>([]);
   const [loading, setLoading] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [lastMessages, setLastMessages] = useState<{
     [conversationId: string]: any;
   }>({});
@@ -325,7 +326,7 @@ export default function Index() {
   );
 
   const handleLastMessagesResponse = useCallback(
-    (data: { updates: LastMessageUpdatePayload[] }) => {
+    (data: { updates: any[] }) => {
       console.log("📨 Last messages response received in index:", data);
       console.log("📨 Number of updates:", data.updates.length);
 
@@ -337,9 +338,11 @@ export default function Index() {
           "📨 Processing update for conversation:",
           update.conversationId
         );
+        console.log("📨 Last message found time stamp:", update.lastMessage.timestamp);
         console.log("📨 Update data:", update);
         newLastMessages[update.conversationId] = update.lastMessage;
         newUnreadCounts[update.conversationId] = update.unreadCount;
+
       });
 
       console.log("📨 New last messages:", newLastMessages);
@@ -395,6 +398,23 @@ export default function Index() {
       console.log("🧹 Cleaning up index.tsx socket listeners");
     };
   }, [handleLastMessageUpdate, handleLastMessagesResponse]); // Removed chatData dependency
+
+  // Get current user ID
+  useEffect(() => {
+    const getCurrentUser = async () => {
+      try {
+        const { getAccount } = await import("@/utils/secureStore");
+        const account = await getAccount();
+        if (account && (account as any).user?.id) {
+          setCurrentUserId((account as any).user.id);
+          console.log("Current user ID:", (account as any).user.id);
+        }
+      } catch (error) {
+        console.error("Error getting current user:", error);
+      }
+    };
+    getCurrentUser();
+  }, []);
 
   // Initial data fetch
   useEffect(() => {
@@ -487,18 +507,128 @@ export default function Index() {
       socketUnreadCount: socketUnreadCount,
       apiLastMessage: item.lastMessage,
       apiTime: item.time,
+      itemType: item.type,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
     });
 
+    // Debug socketLastMessage structure
+    if (socketLastMessage) {
+      console.log(`🔍 socketLastMessage structure for ${item.id}:`, {
+        hasTimestamp: !!socketLastMessage.timestamp,
+        timestampType: typeof socketLastMessage.timestamp,
+        timestampValue: socketLastMessage.timestamp,
+        timestampIsValid: !isNaN(new Date(socketLastMessage.timestamp).getTime()),
+        fullObject: JSON.stringify(socketLastMessage, null, 2)
+      });
+    }
+
     const lastMessageContent = socketLastMessage
-      ? `${socketLastMessage.senderName}: ${socketLastMessage.content}`
+      ? socketLastMessage.content
       : item.lastMessage || "";
 
-    const lastMessageTime = socketLastMessage
-      ? new Date(socketLastMessage.timestamp).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-      : item.time || "";
+    // Fix time formatting - Messenger style
+    const lastMessageTime = (() => {
+      let timestamp: number | null = null;
+
+      // 1. First try socketLastMessage timestamp
+      if (socketLastMessage?.timestamp) {
+        try {
+          console.log(`🕐 Raw socketLastMessage.timestamp for ${item.id}:`, socketLastMessage.timestamp);
+
+          // Convert to number if it's a string
+          const parsedTimestamp = typeof socketLastMessage.timestamp === 'number'
+            ? socketLastMessage.timestamp
+            : parseInt(socketLastMessage.timestamp.toString(), 10);
+
+          if (!isNaN(parsedTimestamp)) {
+            timestamp = parsedTimestamp;
+          }
+        } catch (error) {
+          console.warn(`🕐 Failed to parse socketLastMessage.timestamp for ${item.id}:`, error);
+          timestamp = null;
+        }
+      }
+
+      // 2. Try item.updatedAt as fallback
+      if (!timestamp && item.updatedAt) {
+        try {
+          timestamp = new Date(item.updatedAt).getTime();
+        } catch (error) {
+          console.warn(`🕐 Failed to parse item.updatedAt for ${item.id}:`, error);
+        }
+      }
+
+      // 3. Try item.createdAt as fallback
+      if (!timestamp && item.createdAt) {
+        try {
+          timestamp = new Date(item.createdAt).getTime();
+        } catch (error) {
+          console.warn(`🕐 Failed to parse item.createdAt for ${item.id}:`, error);
+        }
+      }
+
+      // Format timestamp Messenger style
+      if (timestamp) {
+        const messageDate = new Date(timestamp);
+        const now = new Date();
+        const diffInMs = now.getTime() - messageDate.getTime();
+
+        // Less than 1 minute - show "Vừa xong"
+        if (diffInMs < 60 * 1000) {
+          return "Vừa xong";
+        }
+
+        // Less than 1 hour - show minutes ago
+        if (diffInMs < 60 * 60 * 1000) {
+          const minutes = Math.floor(diffInMs / (60 * 1000));
+          return `${minutes} phút`;
+        }
+
+        // Same day - show time only (HH:MM)
+        if (messageDate.toDateString() === now.toDateString()) {
+          return messageDate.toLocaleTimeString('vi-VN', {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+          });
+        }
+
+        // Yesterday - show "Hôm qua"
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        if (messageDate.toDateString() === yesterday.toDateString()) {
+          return "Hôm qua";
+        }
+
+        // This week (last 7 days) - show day name
+        if (diffInMs < 7 * 24 * 60 * 60 * 1000) {
+          const dayNames = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+          return dayNames[messageDate.getDay()];
+        }
+
+        // This year - show DD/MM
+        if (messageDate.getFullYear() === now.getFullYear()) {
+          return messageDate.toLocaleDateString('vi-VN', {
+            day: '2-digit',
+            month: '2-digit'
+          });
+        }
+
+        // Different year - show DD/MM/YYYY
+        return messageDate.toLocaleDateString('vi-VN', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        });
+      }
+
+      // Final fallback
+      console.warn(`🕐 No valid timestamp found for ${item.id}, using fallback`);
+      return "Vừa xong";
+    })();
+
+
 
     return (
       <MessageCard
@@ -506,14 +636,18 @@ export default function Index() {
           id: item.id,
           name: item.name || item.fullName,
           lastMessage: lastMessageContent,
+          lastMessageSenderId: socketLastMessage?.senderId,
+          lastMessageSenderName: socketLastMessage?.senderName,
+          type: item.type?.toLowerCase() === 'group' ? 'group' : 'direct', // Convert API type to MessageCard type
           time: lastMessageTime,
           avatar: item.avatarUrl || item.avatar || images.defaultAvatar,
-          online: item.isOnline || item.online,
+          online: true || item.isOnline || item.online,
           typing: item.typing,
           hasVoice: item.hasVoice,
           pinned: item.pinned,
           unreadCount: socketUnreadCount,
         }}
+        currentUserId={currentUserId || undefined}
         onPress={handleChatPress}
         onDelete={handleDeleteChat}
         onPin={handlePinChat}

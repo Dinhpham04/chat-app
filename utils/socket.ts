@@ -124,21 +124,7 @@ export interface SocketEvents {
     timestamp: number;
   }) => void;
   conversations_last_messages_response: (data: {
-    updates: Array<{
-      conversationId: string;
-      lastMessage: {
-        messageId: string;
-        content: string;
-        messageType: string;
-        senderId: string;
-        senderName: string;
-        timestamp: number;
-        filesInfo?: any[];
-        fileInfo?: any;
-      };
-      unreadCount: number;
-      timestamp: number;
-    }>;
+    updates: any[];
     timestamp: number;
   }) => void;
 }
@@ -183,8 +169,8 @@ class SocketManager {
             }
 
             // Create socket connection
-            this.socket = io("http://192.168.1.11:3000/chat", {
-              //http://192.168.1.11:3000
+            this.socket = io("http://192.168.1.16:3000/chat", {
+              //http://192.168.1.16:3000
               auth: {
                 token: accessToken,
                 deviceId: "mobile_" + Math.random().toString(36).substr(2, 9),
